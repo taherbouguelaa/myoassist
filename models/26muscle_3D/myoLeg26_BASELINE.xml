@@ -46,9 +46,7 @@
 		</default>
     </default>
 
-    <asset>
-        <texture builtin="gradient" height="1536" rgb1="1 1 1" rgb2="1 1 1" type="skybox" width="256"/>
-        
+    <asset>        
         <!-- Human -->
         <mesh file="../mesh/sacrum.stl" name="pelvis_geom_1_sacrum"/>
         <mesh file="../mesh/r_pelvis.stl" name="pelvis_geom_2_pelvis"/>
