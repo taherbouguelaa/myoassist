@@ -133,6 +133,16 @@ class MyoAssistLegBase(env_base.MujocoEnv):
             else:
                 self.rwd_keys_wt[key] = value
 
+        # Stage-specific parameters
+        self.exo_torque_limit = 6
+        print(f"Exoskeleton Torque Limit: {self.exo_torque_limit} Nm")
+        
+        # Support for new Stage 3 rewards
+        # AFTER — just ensure the key is always in rwd_keys_wt if configured:
+        if 'exo_assistance_reward' not in self.rwd_keys_wt:
+            self.rwd_keys_wt['exo_assistance_reward'] = \
+                original_reward_dict.get('exo_assistance_reward', 0.0)
+
         self._initialize_pose()
 
         # reward per step
@@ -264,12 +274,16 @@ class MyoAssistLegBase(env_base.MujocoEnv):
         foot_force_penalty = - self.dt * max(0, normalized_foot_force_sum - 1.2)
         # print(f"DEBUG:: foot_force_penalty: {foot_force_penalty}")
 
+        # Calculate exo assistance reward (per-frame, based on paper formula)
+        exo_assistance_reward = self.dt * self._calculate_exo_assistance_reward_step()
+
         base_reward = {
             'forward_reward': forward_reward,
             'muscle_activation_penalty': muscle_activation_penalty,
             'muscle_activation_diff_penalty': muscle_activation_diff_penalty,
             'foot_force_penalty': foot_force_penalty,
             'joint_constraint_force_penalty': joint_constraint_force_penalty,
+            'exo_assistance_reward': exo_assistance_reward,
         }
         # Update base_reward with reward_per_steps
         base_reward.update(reward_per_steps)
@@ -437,6 +451,55 @@ class MyoAssistLegBase(env_base.MujocoEnv):
     def _get_foot_force(self, foot_side_alphabet:str):
         foot_force = self.sim.data.sensor(f"{foot_side_alphabet}_foot").data.copy()[0] + self.sim.data.sensor(f"{foot_side_alphabet}_toes").data.copy()[0]
         return foot_force
+
+    def _calculate_exo_assistance_reward_step(self):
+        """Calculate the exoskeleton assistance power reward for one step (no dt scaling).
+
+        Improved formula that rewards actual mechanical power assistance:
+        r_exo_step = sum(beta * u_j * omega_j)  [when u_j * omega_j > 0, i.e., assisting]
+        
+        where:
+        - u_j is the normalized torque command (from network, in [-1, 1])
+        - omega_j is the joint angular velocity
+        - beta = 0.1 (scaling coefficient)
+        
+        This formula:
+        - Rewards positive mechanical work (torque aligned with velocity)
+        - Penalizes mechanical work against motion
+        - Scales with both control magnitude AND velocity (more reward for helping fast motion)
+        
+        Note: dt scaling is applied during step accumulation and heel-strike finalization.
+        """
+        # Exo control indices and corresponding joints (from XML order):
+        #   22: Exo_K_flex_R, 23: Exo_K_flex_L
+        #   24: Exo_H_flex_R, 25: Exo_H_flex_L
+        EXO_CONTROL_INDICES = [22, 23, 24, 25]
+        EXO_JOINT_NAMES = [
+            'knee_angle_r',
+            'knee_angle_l',
+            'hip_flexion_r',
+            'hip_flexion_l',
+        ]
+
+        beta = 1.0  # Scaling coefficient - adjusted to make reward more prominent
+        torque_limit = getattr(self, 'exo_torque_limit', 6.0)
+        assistance_reward = 0.0
+
+        for ctrl_idx, joint_name in zip(EXO_CONTROL_INDICES, EXO_JOINT_NAMES):
+            # Get actual torque command
+            actual_control = float(self.sim.data.ctrl[ctrl_idx])
+            u_j = actual_control / torque_limit  # Normalize to [-1, 1]
+            
+            # Get joint velocity
+            omega_j = float(self.sim.data.joint(joint_name).qvel[0])
+            
+            # Reward mechanical work: beta * u_j * omega_j
+            # Positive when torque and velocity have same sign (assisting)
+            # Negative when opposite (resisting)
+            mechanical_power = beta * u_j * omega_j
+            assistance_reward += mechanical_power
+
+        return assistance_reward
 
     # To override
     def _initialize_pose(self):
