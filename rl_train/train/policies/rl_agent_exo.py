@@ -60,6 +60,10 @@ class CustomNetworkHumanExo(BasePPOCustomNetwork):
         layers.append(nn.Tanh())
         self.human_policy_net = nn.Sequential(*layers)
 
+        # Freeze human_actor network if specified
+        for param in self.human_policy_net.parameters():
+            param.requires_grad = False
+
 
         layers = []
         last_dim = self.network_index_handler.get_observation_num("exo_actor")
